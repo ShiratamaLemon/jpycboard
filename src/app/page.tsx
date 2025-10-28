@@ -6,7 +6,7 @@ import { fetchAllChainDataLight, fetchAllChainDataSimple, updateLightweightData,
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042'];
-const POLLING_INTERVAL = 60000; // 60秒
+const POLLING_INTERVAL = 180000; // 180秒（3分）
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
@@ -246,7 +246,7 @@ export default function Dashboard() {
               </div>
             )}
             <div className="text-xs text-gray-500 ml-auto">
-              💡 流通量とDEX価格は60秒ごとに自動更新されます
+              💡 流通量とDEX価格は180秒（3分）ごとに自動更新されます
             </div>
           </div>
         </div>
