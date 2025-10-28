@@ -323,7 +323,12 @@ async function getV2PoolPrice(
       jpycPriceUSD = priceInPairToken / 3000; // 1 ETH = $3000と仮定
     }
     
-    console.log(`[V2] ${displayFormat}, deviation: ${pegDeviation.toFixed(2)}% from ${theoreticalPrice} (oracle: ${usdJpyRate.toFixed(2)})`);
+    // TVL（Total Value Locked）を計算：JPYC + ペア通貨（JPYC換算）
+    // pairAmount（USDC等）をJPYC換算して合算
+    const pairAmountInJpyc = pairAmount * displayPrice; // 例：100 USDC * 150 JPYC/USDC = 15000 JPYC相当
+    const totalLiquidityInJpyc = jpycAmount + pairAmountInJpyc;
+    
+    console.log(`[V2] ${displayFormat}, deviation: ${pegDeviation.toFixed(2)}% from ${theoreticalPrice} (oracle: ${usdJpyRate.toFixed(2)}), TVL: ${totalLiquidityInJpyc.toFixed(0)} JPYC (${jpycAmount.toFixed(0)} JPYC + ${pairAmountInJpyc.toFixed(0)} JPYC-equivalent ${pairSymbol})`);
     
     return {
       poolAddress,
@@ -334,7 +339,7 @@ async function getV2PoolPrice(
       jpycPrice: jpycPriceUSD,
       pegDeviation,
       theoreticalPrice,
-      liquidity: jpycAmount,
+      liquidity: totalLiquidityInJpyc,
     };
   } catch (error) {
     console.warn(`Failed to get V2 pool price for ${poolAddress}:`, error);
@@ -444,12 +449,21 @@ async function getV3PoolPrice(
       jpycPriceUSD = priceInPairToken / 3000; // 1 ETH = $3000と仮定
     }
     
-    // 流動性：プールが保有するJPYCトークンの残高を直接取得
+    // TVL（Total Value Locked）を計算：プールが保有するJPYC + ペア通貨（JPYC換算）
     const jpycContract = new ethers.Contract(JPYC_ADDRESS, ERC20_ABI, provider);
-    const poolJpycBalanceBN = await jpycContract.balanceOf(poolAddress);
-    const jpycLiquidity = parseFloat(ethers.formatUnits(poolJpycBalanceBN, 18));
+    const [poolJpycBalanceBN, poolPairBalanceBN] = await Promise.all([
+      jpycContract.balanceOf(poolAddress),
+      pairContract.balanceOf(poolAddress),
+    ]);
     
-    console.log(`[V3-v2] ✓ ${displayFormat}, deviation: ${pegDeviation.toFixed(2)}% from ${theoreticalPrice} (oracle: ${usdJpyRate.toFixed(2)}), liquidity: ${jpycLiquidity.toFixed(0)} JPYC`);
+    const jpycAmount = parseFloat(ethers.formatUnits(poolJpycBalanceBN, 18));
+    const pairAmount = parseFloat(ethers.formatUnits(poolPairBalanceBN, pairDecimals));
+    
+    // ペア通貨をJPYC換算して合算
+    const pairAmountInJpyc = pairAmount * displayPrice; // 例：100 USDC * 150 JPYC/USDC = 15000 JPYC相当
+    const totalLiquidityInJpyc = jpycAmount + pairAmountInJpyc;
+    
+    console.log(`[V3-v2] ✓ ${displayFormat}, deviation: ${pegDeviation.toFixed(2)}% from ${theoreticalPrice} (oracle: ${usdJpyRate.toFixed(2)}), TVL: ${totalLiquidityInJpyc.toFixed(0)} JPYC (${jpycAmount.toFixed(0)} JPYC + ${pairAmountInJpyc.toFixed(0)} JPYC-equivalent ${pairSymbol})`);
     
     return {
       poolAddress,
@@ -460,7 +474,7 @@ async function getV3PoolPrice(
       jpycPrice: jpycPriceUSD,
       pegDeviation,
       theoreticalPrice,
-      liquidity: jpycLiquidity,
+      liquidity: totalLiquidityInJpyc,
     };
   } catch (error: any) {
     console.error(`[V3-v2] ❌ Failed to get V3 pool price for ${poolAddress}:`, error.message || error);

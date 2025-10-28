@@ -562,7 +562,7 @@ function ChainCard({ chain, color, lastFullUpdate }: { chain: TokenData; color: 
                     </div>
                     <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
                       <span>理論値: {dex.theoreticalPrice.toFixed(2)} JPYC</span>
-                      <span>流動性: {formatNumber(dex.liquidity)} JPYC</span>
+                      <span>TVL: {formatNumber(dex.liquidity)} JPYC</span>
                     </div>
                     {isStrong && (
                       <div className="text-xs text-green-700 font-semibold">
