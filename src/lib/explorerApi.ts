@@ -444,8 +444,10 @@ async function getV3PoolPrice(
       jpycPriceUSD = priceInPairToken / 3000; // 1 ETH = $3000と仮定
     }
     
-    // 流動性の概算（BigIntを明示的にStringに変換）
-    const jpycLiquidity = parseFloat(ethers.formatUnits(liquidity.toString(), 18)) / 2;
+    // 流動性：プールが保有するJPYCトークンの残高を直接取得
+    const jpycContract = new ethers.Contract(JPYC_ADDRESS, ERC20_ABI, provider);
+    const poolJpycBalanceBN = await jpycContract.balanceOf(poolAddress);
+    const jpycLiquidity = parseFloat(ethers.formatUnits(poolJpycBalanceBN, 18));
     
     console.log(`[V3-v2] ✓ ${displayFormat}, deviation: ${pegDeviation.toFixed(2)}% from ${theoreticalPrice} (oracle: ${usdJpyRate.toFixed(2)}), liquidity: ${jpycLiquidity.toFixed(0)} JPYC`);
     
