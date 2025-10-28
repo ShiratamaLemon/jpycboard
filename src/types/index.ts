@@ -67,7 +67,7 @@ export const CHAINS: ChainConfig[] = [
   {
     name: 'Avalanche',
     chainId: 43114,
-    rpcUrl: process.env.NEXT_PUBLIC_AVALANCHE_RPC || 'https://ava-mainnet.public.blastapi.io/ext/bc/C/rpc',
+    rpcUrl: process.env.NEXT_PUBLIC_AVALANCHE_RPC || 'https://avalanche.drpc.org',
     explorerUrl: 'https://snowtrace.io',
   },
 ];
