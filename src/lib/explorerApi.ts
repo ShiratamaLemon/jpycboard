@@ -28,9 +28,20 @@ const UNISWAP_V3_POOL_ABI = [
   'function liquidity() view returns (uint128)',
 ];
 
-// Uniswap V4 PoolManager ABI（簡易版）
+// Curve/Kyberswap StableSwap Pool ABI
+const CURVE_POOL_ABI = [
+  'function price_oracle() view returns (uint256)',
+  'function coins(uint256) view returns (address)',
+  'function balances(uint256) view returns (uint256)',
+  'function get_virtual_price() view returns (uint256)',
+  'function decimals() view returns (uint8)',
+  'function symbol() view returns (string)',
+];
+
+// Uniswap V4 PoolManager ABI（extsload使用）
 const UNISWAP_V4_POOLMANAGER_ABI = [
   'function protocolFeesAccrued(address token) view returns (uint256)',
+  'function extsload(bytes32 slot) view returns (bytes32)',
 ];
 
 // ゼロアドレス（mint時のfrom）
@@ -55,6 +66,68 @@ const KNOWN_V4_POOLMANAGERS: { [chain: string]: string[] } = {
   Polygon: ['0x67366782805870060151383F4BbFF9daB53e5cD6'],
   Avalanche: ['0x06380c0e0912312b5150364b9dc4542ba0dbbc85'],
 };
+
+// DEX Pool設定（V4だけでなく他のDEXにも対応）
+interface PoolConfig {
+  poolType: 'UniswapV4' | 'Curve'; // プールタイプ
+  pairToken: string;        // ペアトークンのシンボル（例：USDC, USDT0）
+  pairAddress: string;      // ペアトークンのアドレス
+  pairDecimals: number;     // ペアトークンのdecimals
+  poolAddress?: string;     // Curveプールのアドレス（V4以外で使用）
+  currency0?: string;       // ソート後のcurrency0（V4用）
+  currency1?: string;       // ソート後のcurrency1（V4用）
+  fee?: number;             // 手数料（V4用）
+  tickSpacing?: number;     // tickSpacing（V4用）
+}
+
+const JPYC_POOL_CONFIGS: { [chain: string]: PoolConfig[] } = {
+  Ethereum: [
+    {
+      poolType: 'UniswapV4',
+      pairToken: 'USDC',
+      pairAddress: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+      pairDecimals: 6,
+      currency0: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC (sorted)
+      currency1: '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29', // JPYC
+      fee: 500,
+      tickSpacing: 10,
+    },
+  ],
+  Polygon: [
+    {
+      poolType: 'UniswapV4',
+      pairToken: 'USDC',
+      pairAddress: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+      pairDecimals: 6,
+      currency0: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', // USDC (sorted)
+      currency1: '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29', // JPYC
+      fee: 500,
+      tickSpacing: 10,
+    },
+    {
+      poolType: 'Curve',
+      pairToken: 'USDT0',
+      pairAddress: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+      pairDecimals: 6,
+      poolAddress: '0x43b98eea5c689f0036918f590a4b55f22d853734', // Kyberswap Curve pool (小文字)
+    },
+  ],
+  Avalanche: [
+    {
+      poolType: 'UniswapV4',
+      pairToken: 'USDC',
+      pairAddress: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',
+      pairDecimals: 6,
+      currency0: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', // USDC (sorted)
+      currency1: '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29', // JPYC
+      fee: 500,
+      tickSpacing: 10,
+    },
+  ],
+};
+
+// Uniswap V4 PoolManager の pools マッピングのストレージスロット
+const POOLS_STORAGE_SLOT = 6;
 
 // Chainlink JPY/USD Price Feed（Ethereum Mainnet）
 // 注意: このフィードはJPY/USD（1 JPY = X USD）の形式
@@ -110,7 +183,9 @@ function getTheoreticalPrice(pairToken: string, usdJpyRate: number): number {
   switch (pairToken.toUpperCase()) {
     case 'USDC':
     case 'USDT':
+    case 'USDT0': // Polygon USDT
     case 'DAI':
+    case 'USDC.E': // Bridged USDC
       return usdJpyRate; // 1 USDC = X JPYC（オラクルレート）
     case 'WETH':
     case 'ETH':
@@ -484,6 +559,197 @@ async function getV3PoolPrice(
 }
 
 /**
+ * Uniswap V4プールの価格を取得（extsload使用）
+ */
+async function getV4PoolPrice(
+  provider: ethers.JsonRpcProvider,
+  poolManagerAddress: string,
+  poolConfig: PoolConfig,
+  chainName: string,
+  usdJpyRate: number
+): Promise<DexPrice | null> {
+  try {
+    // PoolIdを計算
+    const poolId = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ['address', 'address', 'uint24', 'int24', 'address'],
+        [
+          poolConfig.currency0,
+          poolConfig.currency1,
+          poolConfig.fee,
+          poolConfig.tickSpacing,
+          '0x0000000000000000000000000000000000000000', // hooks
+        ]
+      )
+    );
+    
+    console.log(`[V4] Fetching price for ${poolConfig.pairToken}/JPYC on ${chainName}, PoolId: ${poolId}`);
+    
+    const poolManager = new ethers.Contract(poolManagerAddress, UNISWAP_V4_POOLMANAGER_ABI, provider);
+    
+    // poolsマッピングのストレージスロットを計算
+    const storageSlot = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ['bytes32', 'uint256'],
+        [poolId, POOLS_STORAGE_SLOT]
+      )
+    );
+    
+    // extsloadでPool.StateのSlot0を取得
+    const slot0Value = await poolManager.extsload(storageSlot);
+    
+    // 最初の160bitを抽出 (sqrtPriceX96)
+    const sqrtPriceX96 = BigInt(slot0Value) & ((1n << 160n) - 1n);
+    
+    if (sqrtPriceX96 === 0n) {
+      console.log(`[V4] ⚠️ ${poolConfig.pairToken}/JPYC pool not initialized or no liquidity`);
+      return null;
+    }
+    
+    // 価格計算: price = (sqrtPriceX96 / 2^96)^2
+    const sqrtPriceX96Num = Number(sqrtPriceX96.toString());
+    const Q96 = 2 ** 96;
+    const price = (sqrtPriceX96Num / Q96) ** 2;
+    
+    // token0 = pairToken, token1 = JPYC (ソート済み)
+    const token0Decimals = poolConfig.pairDecimals;
+    const token1Decimals = 18;
+    
+    // Decimal adjustment
+    const decimalAdjustment = 10 ** (token0Decimals - token1Decimals);
+    const priceAdjusted = price * decimalAdjustment;
+    
+    // priceAdjusted = token1/token0 = JPYC/pairToken
+    // 表示用: 1 pairToken = X JPYC
+    const displayPrice = priceAdjusted;
+    const displayFormat = `1 ${poolConfig.pairToken} = ${displayPrice.toFixed(2)} JPYC`;
+    
+    // 理論価格とペッグ乖離
+    const theoreticalPrice = getTheoreticalPrice(poolConfig.pairToken, usdJpyRate);
+    const pegDeviation = ((displayPrice - theoreticalPrice) / theoreticalPrice) * 100;
+    
+    // 内部計算用（1 JPYC = X pairToken）
+    const jpycPriceUSD = 1 / priceAdjusted;
+    
+    console.log(`[V4] ✓ ${displayFormat}, deviation: ${pegDeviation.toFixed(2)}% from ${theoreticalPrice.toFixed(2)}`);
+    
+    return {
+      poolAddress: poolManagerAddress,
+      protocol: 'Uniswap V4',
+      pairToken: poolConfig.pairToken,
+      displayPrice,
+      displayFormat,
+      jpycPrice: jpycPriceUSD,
+      pegDeviation,
+      theoreticalPrice,
+      liquidity: 0, // V4はプール単位のTVL計算が困難なため0
+    };
+  } catch (error: any) {
+    console.error(`[V4] ❌ Failed to get V4 pool price for ${poolConfig.pairToken}/JPYC on ${chainName}:`, error.message || error);
+    return null;
+  }
+}
+
+/**
+ * Curve/Kyberswap StableSwapプールの価格を取得
+ */
+async function getCurvePoolPrice(
+  provider: ethers.JsonRpcProvider,
+  poolAddress: string,
+  poolConfig: PoolConfig,
+  chainName: string,
+  usdJpyRate: number
+): Promise<DexPrice | null> {
+  try {
+    console.log(`[Curve] Fetching price for ${poolConfig.pairToken}/JPYC on ${chainName}, Pool: ${poolAddress}`);
+    
+    const poolContract = new ethers.Contract(poolAddress, CURVE_POOL_ABI, provider);
+    
+    // price_oracle()を取得 - token1/token0の価格を返す
+    const priceOracle = await poolContract.price_oracle();
+    
+    console.log(`[Curve] price_oracle: ${priceOracle.toString()}`);
+    
+    // Curveのprice_oracleは通常18 decimalsで token1/token0 を返す
+    // coins(0) = JPYC, coins(1) = USDT0 の場合
+    // price_oracle = USDT0/JPYC の価格
+    
+    // まず、どちらがJPYCかを確認
+    const [coin0, coin1] = await Promise.all([
+      poolContract.coins(0),
+      poolContract.coins(1),
+    ]);
+    
+    const jpycIsToken0 = coin0.toLowerCase() === JPYC_ADDRESS.toLowerCase();
+    
+    console.log(`[Curve] coin0: ${coin0}, coin1: ${coin1}, JPYC is token${jpycIsToken0 ? '0' : '1'}`);
+    
+    // price_oracle の値を数値に変換（18 decimals想定）
+    const priceOracleNum = Number(ethers.formatUnits(priceOracle, 18));
+    
+    // priceOracleNum = token1/token0
+    // もしJPYCがtoken0なら、priceOracleNum = token1/token0 = pairToken/JPYC
+    //   これは「1 pairToken = X JPYC」を意味するので、そのまま使える
+    // もしJPYCがtoken1なら、priceOracleNum = token1/token0 = JPYC/pairToken
+    //   逆数を取って「1 pairToken = X JPYC」にする
+    
+    let displayPrice: number; // 1 pairToken = X JPYC
+    
+    if (jpycIsToken0) {
+      // JPYC is token0, oracle gives token1/token0 = pairToken/JPYC
+      // This already means "1 pairToken = X JPYC"
+      displayPrice = priceOracleNum;
+    } else {
+      // JPYC is token1, oracle gives token1/token0 = JPYC/pairToken
+      // We need the reciprocal to get "1 pairToken = X JPYC"
+      displayPrice = 1 / priceOracleNum;
+    }
+    
+    const displayFormat = `1 ${poolConfig.pairToken} = ${displayPrice.toFixed(2)} JPYC`;
+    
+    // 理論価格とペッグ乖離
+    const theoreticalPrice = getTheoreticalPrice(poolConfig.pairToken, usdJpyRate);
+    const pegDeviation = ((displayPrice - theoreticalPrice) / theoreticalPrice) * 100;
+    
+    // 内部計算用（1 JPYC = X pairToken）
+    const jpycPriceUSD = 1 / displayPrice;
+    
+    // TVL計算
+    const jpycContract = new ethers.Contract(JPYC_ADDRESS, ERC20_ABI, provider);
+    const pairTokenContract = new ethers.Contract(poolConfig.pairAddress, ERC20_ABI, provider);
+    
+    const [jpycBalance, pairBalance] = await Promise.all([
+      jpycContract.balanceOf(poolAddress),
+      pairTokenContract.balanceOf(poolAddress),
+    ]);
+    
+    const jpycAmount = parseFloat(ethers.formatUnits(jpycBalance, 18));
+    const pairAmount = parseFloat(ethers.formatUnits(pairBalance, poolConfig.pairDecimals));
+    
+    // ペアトークンをJPYC換算して合算
+    const pairAmountInJpyc = pairAmount * displayPrice;
+    const totalLiquidityInJpyc = jpycAmount + pairAmountInJpyc;
+    
+    console.log(`[Curve] ✓ ${displayFormat}, deviation: ${pegDeviation.toFixed(2)}% from ${theoreticalPrice.toFixed(2)}, TVL: ${totalLiquidityInJpyc.toFixed(0)} JPYC`);
+    
+    return {
+      poolAddress,
+      protocol: 'Kyberswap',
+      pairToken: poolConfig.pairToken,
+      displayPrice,
+      displayFormat,
+      jpycPrice: jpycPriceUSD,
+      pegDeviation,
+      theoreticalPrice,
+      liquidity: totalLiquidityInJpyc,
+    };
+  } catch (error: any) {
+    console.error(`[Curve] ❌ Failed to get Curve pool price for ${poolConfig.pairToken}/JPYC on ${chainName}:`, error.message || error);
+    return null;
+  }
+}
+
+/**
  * チェーンごとのスキャンブロック数を取得
  */
 function getScanBlocks(chainName: string): number {
@@ -719,12 +985,27 @@ export async function fetchTokenDataLight(chain: ChainConfig, usdJpyRate: number
       }
     }
 
-    // 5. DEX価格を取得（既知のプールのみ、V4はスキップ）
-    console.log(`[${chain.name}] Fetching DEX prices (known pools only)...`);
+    // 5. DEX価格を取得（V4プールのみ）
+    console.log(`[${chain.name}] Fetching DEX prices (V4 pools only in light mode)...`);
     const dexPrices: DexPrice[] = [];
     
-    // V4プールは現在価格取得未対応のため、contractHoldersが空の場合はDEX価格なし
-    console.log(`[${chain.name}] No DEX V2/V3 pools in light mode (only V4 detected)`);
+    // すべてのDEXプールの価格を取得（V4, Curveなど）
+    const poolConfigs = JPYC_POOL_CONFIGS[chain.name] || [];
+    const poolManagerAddr = KNOWN_V4_POOLMANAGERS[chain.name]?.[0];
+    
+    if (poolConfigs.length > 0) {
+      for (const poolConfig of poolConfigs) {
+        if (poolConfig.poolType === 'UniswapV4' && poolManagerAddr) {
+          const v4Price = await getV4PoolPrice(provider, poolManagerAddr, poolConfig, chain.name, usdJpyRate);
+          if (v4Price) dexPrices.push(v4Price);
+        } else if (poolConfig.poolType === 'Curve' && poolConfig.poolAddress) {
+          const curvePrice = await getCurvePoolPrice(provider, poolConfig.poolAddress, poolConfig, chain.name, usdJpyRate);
+          if (curvePrice) dexPrices.push(curvePrice);
+        }
+      }
+    } else {
+      console.log(`[${chain.name}] No DEX pools configured for this chain`);
+    }
 
     // 結果を返す
     return {
@@ -782,6 +1063,7 @@ export async function fetchTokenDataSimple(chain: ChainConfig, usdJpyRate: numbe
     const delayMs = getPriceDelay(chain.name);
     console.log(`[${chain.name}] Using ${delayMs}ms delay between DEX price fetches`);
     
+    // V2/V3プールの価格取得
     for (let i = 0; i < contractHolders.length; i++) {
       const holder = contractHolders[i];
       
@@ -795,6 +1077,23 @@ export async function fetchTokenDataSimple(chain: ChainConfig, usdJpyRate: numbe
       
       // レート制限対策：各プール価格取得後に待機（チェーン別の遅延）
       if (i < contractHolders.length - 1 && (holder.type === 'DEX_V2' || holder.type === 'DEX_V3')) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+    
+    // DEXプールの価格取得（設定ファイルから - V4, Curveなど）
+    const poolConfigs = JPYC_POOL_CONFIGS[chain.name] || [];
+    const poolManagerAddr = KNOWN_V4_POOLMANAGERS[chain.name]?.[0];
+    
+    if (poolConfigs.length > 0) {
+      for (const poolConfig of poolConfigs) {
+        if (poolConfig.poolType === 'UniswapV4' && poolManagerAddr) {
+          const v4Price = await getV4PoolPrice(provider, poolManagerAddr, poolConfig, chain.name, usdJpyRate);
+          if (v4Price) dexPrices.push(v4Price);
+        } else if (poolConfig.poolType === 'Curve' && poolConfig.poolAddress) {
+          const curvePrice = await getCurvePoolPrice(provider, poolConfig.poolAddress, poolConfig, chain.name, usdJpyRate);
+          if (curvePrice) dexPrices.push(curvePrice);
+        }
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
@@ -851,11 +1150,12 @@ export async function fetchDexPricesOnly(
     const dexPrices: DexPrice[] = [];
     
     // DEXプールのみをフィルタリング
-    const dexPools = contractHolders.filter(h => h.type === 'DEX_V2' || h.type === 'DEX_V3');
+    const dexPools = contractHolders.filter(h => h.type === 'DEX_V2' || h.type === 'DEX_V3' || h.type === 'DEX_V4');
     
     const delayMs = getPriceDelay(chain.name);
     console.log(`[${chain.name}] Using ${delayMs}ms delay between DEX price fetches`);
     
+    // V2/V3プールの価格取得
     for (let i = 0; i < dexPools.length; i++) {
       const holder = dexPools[i];
       
@@ -869,6 +1169,23 @@ export async function fetchDexPricesOnly(
       
       // レート制限対策（チェーン別の遅延）
       if (i < dexPools.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+    
+    // DEXプールの価格取得（設定ファイルから - V4, Curveなど）
+    const poolConfigs = JPYC_POOL_CONFIGS[chain.name] || [];
+    const poolManagerAddr = KNOWN_V4_POOLMANAGERS[chain.name]?.[0];
+    
+    if (poolConfigs.length > 0) {
+      for (const poolConfig of poolConfigs) {
+        if (poolConfig.poolType === 'UniswapV4' && poolManagerAddr) {
+          const v4Price = await getV4PoolPrice(provider, poolManagerAddr, poolConfig, chain.name, usdJpyRate);
+          if (v4Price) dexPrices.push(v4Price);
+        } else if (poolConfig.poolType === 'Curve' && poolConfig.poolAddress) {
+          const curvePrice = await getCurvePoolPrice(provider, poolConfig.poolAddress, poolConfig, chain.name, usdJpyRate);
+          if (curvePrice) dexPrices.push(curvePrice);
+        }
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
