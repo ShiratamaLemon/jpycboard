@@ -1,7 +1,7 @@
 {
-  "name": "jpyc-dashboard",
+  "name": "jpycboard",
   "version": "1.0.0",
-  "description": "JPYC Token Distribution Dashboard across Ethereum, Polygon, and Avalanche",
+  "description": "JPYC Real-time Circulation Dashboard with DeFi Integration",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
