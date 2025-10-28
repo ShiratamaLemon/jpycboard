@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { CHAINS, TokenData, JPYC_ADDRESS } from '@/types';
-import { fetchAllChainDataSimple, updateLightweightData, formatNumber, shortenAddress, ChainDataResult } from '@/lib/explorerApi';
+import { fetchAllChainDataLight, fetchAllChainDataSimple, updateLightweightData, formatNumber, shortenAddress, ChainDataResult } from '@/lib/explorerApi';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042'];
@@ -22,18 +22,47 @@ export default function Dashboard() {
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 全データを取得（重い処理）
+  // 軽量データを取得（初回ロード用 - 高速）
+  const loadLightData = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      console.log('🚀 Loading light data (fast initial load)...');
+      const results = await fetchAllChainDataLight(CHAINS);
+      
+      // 成功したチェーンと失敗したチェーンを分離
+      const successful = results.filter(r => r.success && r.data).map(r => r.data!);
+      const failed = results.filter(r => !r.success);
+      
+      console.log('Successful chains (light):', successful.map(d => d.chain));
+      console.log('Failed chains:', failed.map(f => f.chain));
+      
+      setChainData(successful);
+      setFailedChains(failed);
+      setAllResults(results);
+      setLastUpdate(new Date());
+      // lastFullUpdateは設定しない（まだフル取得していない）
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '未知のエラーが発生しました');
+      console.error('Error loading light data:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 全データを取得（重い処理 - コントラクト検出含む）
   const loadFullData = async () => {
     try {
       setLoading(true);
       setError(null);
+      console.log('🔍 Loading full data (with contract scanning)...');
       const results = await fetchAllChainDataSimple(CHAINS);
       
       // 成功したチェーンと失敗したチェーンを分離
       const successful = results.filter(r => r.success && r.data).map(r => r.data!);
       const failed = results.filter(r => !r.success);
       
-      console.log('Successful chains:', successful.map(d => d.chain));
+      console.log('Successful chains (full):', successful.map(d => d.chain));
       console.log('Failed chains:', failed.map(f => f.chain));
       
       setChainData(successful);
@@ -43,7 +72,7 @@ export default function Dashboard() {
       setLastFullUpdate(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知のエラーが発生しました');
-      console.error('Error loading data:', err);
+      console.error('Error loading full data:', err);
     } finally {
       setLoading(false);
     }
@@ -73,9 +102,9 @@ export default function Dashboard() {
     }
   }, [allResults, isPolling]);
 
-  // 初回ロード
+  // 初回ロード（軽量版で高速表示）
   useEffect(() => {
-    loadFullData();
+    loadLightData();
   }, []);
 
   // 自動ポーリング
@@ -114,19 +143,35 @@ export default function Dashboard() {
   }));
 
   if (loading) {
+    // 初回ロードかフルロードかを判定
+    const isFullLoad = lastUpdate !== null; // 既にデータがある = フルロード中
+    
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
         <div className="text-center max-w-md">
           <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-indigo-600 mx-auto mb-4"></div>
           <p className="text-xl text-gray-700 mb-2">データを読み込んでいます...</p>
           <p className="text-sm text-gray-500 mt-2">RPCから直接データを取得しています</p>
-          <p className="text-xs text-gray-400 mt-4">
-            残高情報とコントラクト保有者を検出中...
-            <br />
-            通常1〜2分程度で完了します。
-          </p>
+          {isFullLoad ? (
+            <p className="text-xs text-gray-400 mt-4">
+              コントラクト保有者を検出中...
+              <br />
+              通常30秒〜2分程度で完了します。
+            </p>
+          ) : (
+            <p className="text-xs text-gray-400 mt-4">
+              基本情報を取得中...
+              <br />
+              通常数秒で完了します。
+            </p>
+          )}
           <div className="mt-6 bg-white rounded-lg p-4 shadow-lg">
-            <p className="text-xs text-gray-600 text-left mb-2">💡 ヒント: ブラウザのコンソール（F12）で詳細な進捗を確認できます</p>
+            <p className="text-xs text-gray-600 text-left mb-2">
+              💡 {isFullLoad ? 'コントラクトスキャン中...' : '高速ロード中...'}
+            </p>
+            <p className="text-xs text-gray-500 text-left">
+              ブラウザのコンソール（F12）で詳細な進捗を確認できます
+            </p>
           </div>
         </div>
       </div>
@@ -179,8 +224,9 @@ export default function Dashboard() {
                 onClick={loadFullData}
                 disabled={loading}
                 className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-bold py-2 px-4 rounded transition-colors text-sm whitespace-nowrap"
+                title="コントラクト保有者を再スキャン（30秒〜2分）"
               >
-                全データ再取得
+                {lastFullUpdate ? '全データ再取得' : 'コントラクト情報取得'}
               </button>
             </div>
           </div>
@@ -350,7 +396,7 @@ export default function Dashboard() {
         {/* チェーン別詳細 */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {chainData.map((chain, index) => (
-            <ChainCard key={chain.chain} chain={chain} color={COLORS[index]} />
+            <ChainCard key={chain.chain} chain={chain} color={COLORS[index]} lastFullUpdate={lastFullUpdate} />
           ))}
         </div>
       </div>
@@ -375,7 +421,7 @@ function StatCard({ title, value, unit, color }: { title: string; value: string;
 }
 
 // チェーンカードコンポーネント
-function ChainCard({ chain, color }: { chain: TokenData; color: string }) {
+function ChainCard({ chain, color, lastFullUpdate }: { chain: TokenData; color: string; lastFullUpdate: Date | null }) {
   const getExplorerUrl = (chainName: string) => {
     const baseUrls: { [key: string]: string } = {
       'Ethereum': 'https://etherscan.io',
@@ -427,11 +473,11 @@ function ChainCard({ chain, color }: { chain: TokenData; color: string }) {
         </div>
 
         {/* コントラクト保有者リスト */}
-        {chain.contractHolders && chain.contractHolders.length > 0 && (
-          <div className="pt-3 border-t border-gray-200">
-            <p className="text-sm font-semibold text-gray-700 mb-2">
-              💼 コントラクト保有者 (トップ{chain.contractHolders.length}件)
-            </p>
+        <div className="pt-3 border-t border-gray-200">
+          <p className="text-sm font-semibold text-gray-700 mb-2">
+            💼 コントラクト保有者
+          </p>
+          {chain.contractHolders && chain.contractHolders.length > 0 ? (
             <div className="space-y-2 max-h-60 overflow-y-auto">
               {chain.contractHolders.map((holder, idx) => {
                 const typeIcon = 
@@ -465,8 +511,17 @@ function ChainCard({ chain, color }: { chain: TokenData; color: string }) {
                 );
               })}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="bg-gray-50 rounded p-3 border border-gray-300">
+              <p className="text-xs text-gray-600 mb-2">
+                コントラクト保有者情報がまだ取得されていません
+              </p>
+              <p className="text-xs text-gray-500">
+                「{lastFullUpdate ? '全データ再取得' : 'コントラクト情報取得'}」ボタンをクリックしてスキャンを開始してください
+              </p>
+            </div>
+          )}
+        </div>
 
         {/* DEX価格情報 */}
         {chain.dexPrices && chain.dexPrices.length > 0 && (

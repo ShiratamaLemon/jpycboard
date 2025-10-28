@@ -646,10 +646,91 @@ async function detectContractHolders(
 }
 
 /**
- * トークンデータを取得（シンプル方式）
+ * トークンデータを取得（軽量版 - コントラクト検出スキップ）
+ * 初回ロード用：総供給量、運営保有量、流通量、既知プールのDEX価格のみ
+ */
+export async function fetchTokenDataLight(chain: ChainConfig, usdJpyRate: number): Promise<TokenData> {
+  console.log(`[${chain.name}] Starting light data fetch (no contract scanning)...`);
+  
+  try {
+    // プロバイダーとコントラクト接続
+    const provider = new ethers.JsonRpcProvider(chain.rpcUrl, undefined, {
+      staticNetwork: true,
+    });
+    const contract = new ethers.Contract(JPYC_ADDRESS, ERC20_ABI, provider);
+
+    // 1. Total Supply取得
+    console.log(`[${chain.name}] Fetching total supply...`);
+    const totalSupplyBN = await contract.totalSupply();
+    const totalSupply = parseFloat(ethers.formatUnits(totalSupplyBN, 18));
+    console.log(`[${chain.name}] Total supply: ${totalSupply.toFixed(2)} JPYC`);
+
+    // 2. 運営ウォレット残高取得
+    console.log(`[${chain.name}] Fetching operating wallet balance...`);
+    const operatingBalanceBN = await contract.balanceOf(OPERATING_WALLET);
+    const operatingBalance = parseFloat(ethers.formatUnits(operatingBalanceBN, 18));
+    console.log(`[${chain.name}] Operating wallet balance: ${operatingBalance.toFixed(2)} JPYC`);
+
+    // 3. 流通量 = Total Supply - 運営ウォレット残高
+    const circulatingSupply = totalSupply - operatingBalance;
+    console.log(`[${chain.name}] Circulating supply: ${circulatingSupply.toFixed(2)} JPYC`);
+
+    // 4. 既知のV4 PoolManagerのみをチェック（Transferスキャンなし）
+    const v4Managers = KNOWN_V4_POOLMANAGERS[chain.name] || [];
+    const contractHolders: any[] = [];
+    
+    if (v4Managers.length > 0) {
+      console.log(`[${chain.name}] Checking ${v4Managers.length} known V4 PoolManagers...`);
+      
+      for (const addr of v4Managers) {
+        try {
+          const balance = await contract.balanceOf(addr);
+          const balanceFormatted = parseFloat(ethers.formatUnits(balance, 18));
+          
+          if (balanceFormatted > 0) {
+            contractHolders.push({
+              address: addr.toLowerCase(),
+              balance: balanceFormatted,
+              percentage: (balanceFormatted / totalSupply) * 100,
+              type: 'DEX_V4',
+              protocol: 'Uniswap V4',
+            });
+            console.log(`[${chain.name}] ✓ Known V4 PoolManager ${addr}: ${balanceFormatted.toFixed(2)} JPYC`);
+          }
+        } catch (error) {
+          console.warn(`[${chain.name}] Failed to get balance for V4 PoolManager ${addr}:`, error);
+        }
+      }
+    }
+
+    // 5. DEX価格を取得（既知のプールのみ、V4はスキップ）
+    console.log(`[${chain.name}] Fetching DEX prices (known pools only)...`);
+    const dexPrices: DexPrice[] = [];
+    
+    // V4プールは現在価格取得未対応のため、contractHoldersが空の場合はDEX価格なし
+    console.log(`[${chain.name}] No DEX V2/V3 pools in light mode (only V4 detected)`);
+
+    // 結果を返す
+    return {
+      chain: chain.name,
+      totalSupply,
+      operatingBalance,
+      circulatingSupply,
+      holders: [],
+      contractHolders,
+      dexPrices,
+    };
+  } catch (error: any) {
+    console.error(`[${chain.name}] Error in light fetch:`, error);
+    throw new Error(`Failed to fetch light data for ${chain.name}: ${error.message}`);
+  }
+}
+
+/**
+ * トークンデータを取得（完全版 - コントラクト検出含む）
  */
 export async function fetchTokenDataSimple(chain: ChainConfig, usdJpyRate: number): Promise<TokenData> {
-  console.log(`[${chain.name}] Starting simple data fetch with USD/JPY rate: ${usdJpyRate.toFixed(2)}...`);
+  console.log(`[${chain.name}] Starting full data fetch with USD/JPY rate: ${usdJpyRate.toFixed(2)}...`);
   
   try {
     // プロバイダーとコントラクト接続
@@ -881,8 +962,12 @@ export interface ChainDataResult {
   chain: string;
 }
 
-export async function fetchAllChainDataSimple(chains: ChainConfig[]): Promise<ChainDataResult[]> {
-  console.log('Starting parallel data fetch for all chains...');
+/**
+ * 全チェーンのデータを並列取得（軽量版 - 初回ロード用）
+ * コントラクト検出をスキップし、基本情報のみ取得
+ */
+export async function fetchAllChainDataLight(chains: ChainConfig[]): Promise<ChainDataResult[]> {
+  console.log('🚀 Starting LIGHT parallel data fetch for all chains (no contract scanning)...');
   
   // 1. 最初にChainlink USD/JPYレートを取得（全チェーンで共有）
   console.log('[Global] Fetching USD/JPY rate from Chainlink oracle (Ethereum mainnet)...');
@@ -890,14 +975,14 @@ export async function fetchAllChainDataSimple(chains: ChainConfig[]): Promise<Ch
   const usdJpyRate = oracleRate || USD_JPY_RATE_FALLBACK;
   console.log(`[Global] Using USD/JPY rate: ${usdJpyRate.toFixed(2)} (${oracleRate ? 'from oracle' : 'fallback'}) for all chains`);
   
-  // 2. 各チェーンのデータを並列取得（同じUSD/JPYレートを使用）
+  // 2. 各チェーンのデータを並列取得（軽量版）
   const results = await Promise.allSettled(
     chains.map(async (chain) => {
       try {
-        const data = await fetchTokenDataSimple(chain, usdJpyRate);
+        const data = await fetchTokenDataLight(chain, usdJpyRate);
         return { success: true, data, chain: chain.name };
       } catch (error: any) {
-        console.error(`Failed to fetch data for ${chain.name}:`, error);
+        console.error(`Failed to fetch light data for ${chain.name}:`, error);
         return {
           success: false,
           error: error.message || 'Unknown error',
@@ -906,6 +991,52 @@ export async function fetchAllChainDataSimple(chains: ChainConfig[]): Promise<Ch
       }
     })
   );
+
+  console.log('✅ Light data fetch completed for all chains');
+
+  return results.map((result) => {
+    if (result.status === 'fulfilled') {
+      return result.value;
+    } else {
+      return {
+        success: false,
+        error: result.reason?.message || 'Unknown error',
+        chain: 'Unknown',
+      };
+    }
+  });
+}
+
+/**
+ * 全チェーンのデータを並列取得（完全版 - コントラクト検出含む）
+ */
+export async function fetchAllChainDataSimple(chains: ChainConfig[]): Promise<ChainDataResult[]> {
+  console.log('🔍 Starting FULL parallel data fetch for all chains (with contract scanning)...');
+  
+  // 1. 最初にChainlink USD/JPYレートを取得（全チェーンで共有）
+  console.log('[Global] Fetching USD/JPY rate from Chainlink oracle (Ethereum mainnet)...');
+  const oracleRate = await getUsdJpyRateFromOracle();
+  const usdJpyRate = oracleRate || USD_JPY_RATE_FALLBACK;
+  console.log(`[Global] Using USD/JPY rate: ${usdJpyRate.toFixed(2)} (${oracleRate ? 'from oracle' : 'fallback'}) for all chains`);
+  
+  // 2. 各チェーンのデータを並列取得（完全版）
+  const results = await Promise.allSettled(
+    chains.map(async (chain) => {
+      try {
+        const data = await fetchTokenDataSimple(chain, usdJpyRate);
+        return { success: true, data, chain: chain.name };
+      } catch (error: any) {
+        console.error(`Failed to fetch full data for ${chain.name}:`, error);
+        return {
+          success: false,
+          error: error.message || 'Unknown error',
+          chain: chain.name,
+        };
+      }
+    })
+  );
+
+  console.log('✅ Full data fetch completed for all chains');
 
   return results.map((result) => {
     if (result.status === 'fulfilled') {
