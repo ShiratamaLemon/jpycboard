@@ -67,6 +67,19 @@ const KNOWN_V4_POOLMANAGERS: { [chain: string]: string[] } = {
   Avalanche: ['0x06380c0e0912312b5150364b9dc4542ba0dbbc85'],
 };
 
+// 既知のCurve/Kyberswapプール
+const KNOWN_CURVE_POOLS: { [chain: string]: { address: string; protocol: string; pairToken: string }[] } = {
+  Ethereum: [],
+  Polygon: [
+    {
+      address: '0x43b98eea5c689f0036918f590a4b55f22d853734',
+      protocol: 'Kyberswap',
+      pairToken: 'USDT0',
+    },
+  ],
+  Avalanche: [],
+};
+
 // DEX Pool設定（V4だけでなく他のDEXにも対応）
 interface PoolConfig {
   poolType: 'UniswapV4' | 'Curve'; // プールタイプ
@@ -303,6 +316,14 @@ async function detectContractType(
     if (v4Managers.some(addr => addr.toLowerCase() === address.toLowerCase())) {
       console.log(`[${chainName}] Detected Uniswap V4 PoolManager: ${address}`);
       return { type: 'DEX_V4', protocol: 'Uniswap V4 PoolManager' };
+    }
+    
+    // Curve/Kyberswapプールチェック（既知アドレス）
+    const curvePools = KNOWN_CURVE_POOLS[chainName] || [];
+    const curvePool = curvePools.find(p => p.address.toLowerCase() === address.toLowerCase());
+    if (curvePool) {
+      console.log(`[${chainName}] Detected ${curvePool.protocol} pool: ${address}`);
+      return { type: 'DEX_V2', protocol: curvePool.protocol }; // CurveはDEX_V2扱い
     }
     
     // Uniswap V2スタイルのプールチェック
@@ -811,14 +832,21 @@ async function detectContractHolders(
       }
     }
     
-    // 既知のV4 PoolManagerを強制的に追加（スキャン範囲外でも検出）
+    // 既知のDEXコントラクトを強制的に追加（スキャン範囲外でも検出）
     const v4Managers = KNOWN_V4_POOLMANAGERS[chainName] || [];
     v4Managers.forEach(addr => {
       recipientAddresses.add(addr.toLowerCase());
       console.log(`[${chainName}] ✓ Added known V4 PoolManager: ${addr}`);
     });
     
-    console.log(`[${chainName}] Found ${recipientAddresses.size} unique recipient addresses (including ${v4Managers.length} known V4 managers)`);
+    const curvePools = KNOWN_CURVE_POOLS[chainName] || [];
+    curvePools.forEach(pool => {
+      recipientAddresses.add(pool.address.toLowerCase());
+      console.log(`[${chainName}] ✓ Added known ${pool.protocol} pool: ${pool.address}`);
+    });
+    
+    const knownDexCount = v4Managers.length + curvePools.length;
+    console.log(`[${chainName}] Found ${recipientAddresses.size} unique recipient addresses (including ${knownDexCount} known DEX contracts)`);
     
     // コントラクトを特定（バッチ処理）
     const addresses = Array.from(recipientAddresses);
@@ -957,10 +985,12 @@ export async function fetchTokenDataLight(chain: ChainConfig, usdJpyRate: number
     const circulatingSupply = totalSupply - operatingBalance;
     console.log(`[${chain.name}] Circulating supply: ${circulatingSupply.toFixed(2)} JPYC`);
 
-    // 4. 既知のV4 PoolManagerのみをチェック（Transferスキャンなし）
+    // 4. 既知のDEXコントラクトをチェック（Transferスキャンなし）
     const v4Managers = KNOWN_V4_POOLMANAGERS[chain.name] || [];
+    const curvePools = KNOWN_CURVE_POOLS[chain.name] || [];
     const contractHolders: any[] = [];
     
+    // V4 PoolManagersをチェック
     if (v4Managers.length > 0) {
       console.log(`[${chain.name}] Checking ${v4Managers.length} known V4 PoolManagers...`);
       
@@ -984,6 +1014,34 @@ export async function fetchTokenDataLight(chain: ChainConfig, usdJpyRate: number
         }
       }
     }
+    
+    // Curve/Kyberswapプールをチェック
+    if (curvePools.length > 0) {
+      console.log(`[${chain.name}] Checking ${curvePools.length} known Curve/Kyberswap pools...`);
+      
+      for (const pool of curvePools) {
+        try {
+          const balance = await contract.balanceOf(pool.address);
+          const balanceFormatted = parseFloat(ethers.formatUnits(balance, 18));
+          
+          if (balanceFormatted > 0) {
+            contractHolders.push({
+              address: pool.address.toLowerCase(),
+              balance: balanceFormatted,
+              percentage: (balanceFormatted / totalSupply) * 100,
+              type: 'DEX_V2', // CurveはV2扱い
+              protocol: pool.protocol,
+            });
+            console.log(`[${chain.name}] ✓ Known ${pool.protocol} pool ${pool.address}: ${balanceFormatted.toFixed(2)} JPYC`);
+          }
+        } catch (error) {
+          console.warn(`[${chain.name}] Failed to get balance for ${pool.protocol} pool ${pool.address}:`, error);
+        }
+      }
+    }
+    
+    // コントラクト保有者を残高降順でソート
+    contractHolders.sort((a, b) => b.balance - a.balance);
 
     // 5. DEX価格を取得（V4プールのみ）
     console.log(`[${chain.name}] Fetching DEX prices (V4 pools only in light mode)...`);
@@ -1099,6 +1157,9 @@ export async function fetchTokenDataSimple(chain: ChainConfig, usdJpyRate: numbe
     }
     
     console.log(`[${chain.name}] Found ${dexPrices.length} DEX pools with prices`);
+    
+    // コントラクト保有者を残高降順でソート
+    contractHolders.sort((a, b) => b.balance - a.balance);
 
     // 結果を返す
     return {
