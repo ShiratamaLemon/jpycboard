@@ -51,7 +51,7 @@ const KNOWN_DEX_POOLS: { [chain: string]: { [address: string]: { protocol: strin
 
 // 既知のUniswap V4 PoolManager
 const KNOWN_V4_POOLMANAGERS: { [chain: string]: string[] } = {
-  Ethereum: [],
+  Ethereum: ['0x000000000004444c5dc75cB358380D2e3dE08A90'],
   Polygon: ['0x67366782805870060151383F4BbFF9daB53e5cD6'],
   Avalanche: ['0x06380c0e0912312b5150364b9dc4542ba0dbbc85'],
 };
