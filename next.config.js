@@ -9,7 +9,7 @@ const nextConfig = {
   env: {
     NEXT_PUBLIC_ETHEREUM_RPC: process.env.NEXT_PUBLIC_ETHEREUM_RPC || 'https://eth.llamarpc.com',
     NEXT_PUBLIC_POLYGON_RPC: process.env.NEXT_PUBLIC_POLYGON_RPC || 'https://polygon-rpc.com',
-    NEXT_PUBLIC_AVALANCHE_RPC: process.env.NEXT_PUBLIC_AVALANCHE_RPC || 'https://1rpc.io/avax/c',
+    NEXT_PUBLIC_AVALANCHE_RPC: process.env.NEXT_PUBLIC_AVALANCHE_RPC || 'https://api.avax.network/ext/bc/C/rpc',
   },
 }
 

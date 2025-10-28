@@ -91,7 +91,7 @@ npm install
 # RPC Endpoints（オプション - 指定しない場合は無料RPCを使用）
 NEXT_PUBLIC_ETHEREUM_RPC=https://eth.llamarpc.com
 NEXT_PUBLIC_POLYGON_RPC=https://polygon-rpc.com
-NEXT_PUBLIC_AVALANCHE_RPC=https://1rpc.io/avax/c
+NEXT_PUBLIC_AVALANCHE_RPC=https://api.avax.network/ext/bc/C/rpc
 ```
 
 **推奨**: より高速で安定した接続のため、商用RPCプロバイダーの使用を推奨：
