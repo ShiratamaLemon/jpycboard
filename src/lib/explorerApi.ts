@@ -323,7 +323,8 @@ async function detectContractType(
     const curvePool = curvePools.find(p => p.address.toLowerCase() === address.toLowerCase());
     if (curvePool) {
       console.log(`[${chainName}] Detected ${curvePool.protocol} pool: ${address}`);
-      return { type: 'DEX_V2', protocol: curvePool.protocol }; // CurveはDEX_V2扱い
+      // CurveプールはJPYC_POOL_CONFIGSで処理されるため、ここではUNKNOWNを返す
+      return { type: 'UNKNOWN', protocol: curvePool.protocol };
     }
     
     // Uniswap V2スタイルのプールチェック
